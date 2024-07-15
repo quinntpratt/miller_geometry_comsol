@@ -345,20 +345,22 @@ for a in [ax, ax1]:
 Bsafe = copy.deepcopy(B)
 Bsafe[B==0] = np.nan
 
-fig, axs = plt.subplots(1,5,num="Interpolated fields", figsize=(13, 3))
+fig, axs = plt.subplots(2,3,num="Interpolated fields", figsize=(8, 5))
+axs = axs.flatten()
 pc = axs[0].pcolormesh(RRi, ZZi, nei)
 fig.colorbar(pc, ax=axs[0], label="Density [E19 1/m^3]")
 pc = axs[1].pcolormesh(RRi, ZZi, Bsafe)
 fig.colorbar(pc, ax=axs[1], label="Total B [T]")
 norm = Normalize(-1, 1)
-pc = axs[2].pcolormesh(RRi, ZZi, Bx/Bsafe, norm=norm)
-axs[3].pcolormesh(RRi, ZZi, By/Bsafe, norm=norm)
-axs[4].pcolormesh(RRi, ZZi, Bz/Bsafe, norm=norm)
-fig.colorbar(pc, ax=axs[4])
-for a, txt in zip(axs, ["ne", "B_tot","bx","by","bz"]):
+pc = axs[3].pcolormesh(RRi, ZZi, Bx/Bsafe, norm=norm)
+axs[4].pcolormesh(RRi, ZZi, By/Bsafe, norm=norm)
+axs[5].pcolormesh(RRi, ZZi, Bz/Bsafe, norm=norm)
+fig.colorbar(pc, ax=axs[5])
+for a, txt in zip(axs, ["ne", "B_tot","","bx","by","bz"]):
     a.set_title(txt)
     a.set_aspect("equal")
 fig.tight_layout()
+axs[2].remove()
 
 # %% Write COMSOL input file.
 if write_file:
