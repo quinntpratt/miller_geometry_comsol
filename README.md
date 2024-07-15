@@ -1,4 +1,4 @@
-## COMSOL 2DFW with Miller geometry
+## COMSOL 2DFW setup with Miller geometry
 Python program to create inputs for a two dimensional full-wave COMSOL simulation based on Miller flux surfaces.
 COMSOL simulations require the density (ne) and the magnetic field components (Bx, By, Bz). 
 
