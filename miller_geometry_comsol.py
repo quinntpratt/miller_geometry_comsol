@@ -11,22 +11,31 @@ This program creates an input file for 2D full-wave simulations using the
 COMSOL RF module.
 The Miller Geometry [1] is used to create non-trivial flux surfaces.
 
-The magnetic field is specified by the toroidal field function, I = RB_\phi, 
-along with the saftey factor, q.
+The magnetic field is specified by the toroidal field function, I = RB_\phi and
+the saftey factor, q.
  
-The density is specified with a radial profile and is mapped onto the 2D 
-flux surfaces.
+The plasma density is specified with a radial profile, ne(r) and is mapped onto
+the 2D flux surfaces.
 
 The resulting magnetic equilibrium is NOT guarenteed to be a solution to the 
 Grad-Shafronov equation.
 
-The magnetic field components and the density are written to a file.
+The magnetic field components and the density are written to a (.csv) file.
+The file consists of a regularly-spaced grid of the form, 
+    R, Z, ne, Bx, By, Bz
+    
+Optionally, input files for the Scotty beam-tracing code can also be generated.
+The Scotty code [3] uses the poloidal magnetic flux to interpolate the density
+profile onto the magnetic equilibrium.
 
 References
 ----------
 [1] Physics of Plasmas 5, 973 (1998); https://doi.org/10.1063/1.872666
 [2] Y. Hu, "Notes on tokamak equilibrium"
     https://youjunhu.github.io/research_notes/tokamak_equilibrium_htlatex/tokamak_equilibrium.html#x1-48001r182
+[3] Valerian H Hall-Chen et al 2022 Plasma Phys. Control. Fusion 64 095002
+    https://doi.org/10.1088/1361-6587/ac57a1
+
 
 All rights reserved
 """
@@ -36,12 +45,18 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.colors import Normalize
 from scipy.interpolate import LinearNDInterpolator
+from scipy.integrate import cumulative_trapezoid
 import copy
 
 # Change the path and filename,
-write_file = False
-path = "/Users/quinnpratt/Documents/COMSOL60/simplified_dbs_emw_v2/"
-fname = "comsol_dbs_emw_input.csv"
+write_comsol_input = False
+comsol_files_path = "/Users/quinnpratt/Documents/COMSOL60/simplified_dbs_emw_v2/"
+comsol_input_filename = "comsol_dbs_emw_input.csv"
+
+write_scotty_input = False
+scotty_files_path = "/Users/quinnpratt/Documents/Scripts/scotty_test_miller/"
+# The scotty files are: 'topfile.json' and 'ne.dat'
+
 f_rf = 72.5 # [GHz]
 
 class MillerGeom:
@@ -115,7 +130,7 @@ class MillerGeom:
         self.dZdt, self.dZdr = np.gradient(self.Zs, self.theta, self.r)
         return self.dRdt, self.dRdr, self.dZdt, self.dZdr
     
-    def calc_metric_terms(self):
+    def calc_metric_terms(self, debug_plot=False):
         """
         Compute useful metric terms (used in other methods).
 
@@ -138,6 +153,16 @@ class MillerGeom:
         self.gr_gt = -R**2/self.J**2 * ( dZdt*dZdr + dRdt*dRdr )
         # 3. |grad(r)|**2
         self.gr2 = R**2/self.J**2 * ( dZdt**2 + dRdt**2 )
+        
+        if debug_plot:
+            plt.figure("MillerGeom.calc_metric_terms")
+            plt.plot(self.r,self.J[0,:], label="Jacobian")
+            plt.plot(self.r,self.gr_gt[0,:], label=r"$\nabla r \cdot \nabla \theta$")
+            plt.plot(self.r,self.gr2[0,:], label=r"$|\nabla r|^2$")
+            plt.xlabel("r_min")
+            plt.title(r"Metric Terms at $\theta = 0$")
+            plt.legend()
+        
         return self.J, self.gr_gt, self.gr2
     
     def calc_psiprime(self, I, q):
@@ -158,7 +183,6 @@ class MillerGeom:
             Radial derivative of the poloidal magnetic flux.
 
         """
-        
         self.calc_metric_terms()
         self.psiprime = -1/(2*np.pi)*I/q* np.trapz(self.J/self.Rs**2, self.theta, axis=0)
         return self.psiprime
@@ -180,7 +204,6 @@ class MillerGeom:
             Poloidal magnetic field vector: [Bp_R, Bp_Z] components.
 
         """
-        
         psiprime = self.calc_psiprime(I, q)
         
         Z_comp = self.gr_gt * self.dRdt + self.gr2*self.dRdr
@@ -195,8 +218,7 @@ class MillerGeom:
 
 # %% Flux Surface Shape
 # This section calculates the flux surface shapes.
-
-# Definition of the full [0, 2pi) grid,
+# Definition of the full \theta \in [0, 2pi) grid,
 Nth, Nr = 201, 101
 r = np.linspace(0.4, 0.7, Nr) # midplane half-diameter coordinate.
 theta = np.linspace(0, 2*np.pi, Nth) # poloidal angle coordinate.
@@ -210,8 +232,8 @@ fs_kw = dict(R0=-0.14*r + 1.78,
 
 # Create the MillerGeom object,
 MG = MillerGeom(r, theta, **fs_kw)
-Rs, Zs = MG.Rs, MG.Zs # Flux surfaces.
-
+# Extract the flux surfaces,
+Rs, Zs = MG.Rs, MG.Zs 
 # Plot the flux surfaces and the Miller params,
 fig = plt.figure("Miller Flux Surfaces",(10, 6))
 gs = fig.add_gridspec(5,2,)
@@ -232,13 +254,12 @@ axs[-1].set_xlabel("r")
     
 # %% Magnetic field
 # This section calculates the magnetic field provided I and q.
-
-# The toroidal field function -- must me len(r)
+# The toroidal field function -- must be len(r)
 I = -3.08*np.ones(len(r)) # I(psi) = R*B_tor [m*T]
 Btor_mag = I/Rs
 # Saftey factor,
-q = 2.8*np.ones(len(r)) # constant
-q = -17.2*r + 5.1 # linear
+# q = 2.8*np.ones(len(r)) # constant
+# q = -17.2*r + 5.1 # linear
 q = -65.5*r**2 + 48.5*r - 11.16 # quadratic
 
 # Calculate the poloidal magnetic field,
@@ -249,7 +270,7 @@ Bp_mag = np.sqrt(Bp_R**2 + Bp_Z**2) # [T]
 
 # Plot the poloidal magnetic field,
 c = ax.contourf(Rs, Zs, Bp_mag)
-fig.colorbar(c, ax=ax)
+fig.colorbar(c, ax=ax,label=r"$B_p$ [T]")
 ax.quiver(Rs[::skip,::skip], Zs[::skip,::skip],
           Bp_R[::skip,::skip], Bp_Z[::skip,::skip])
 # Also show the I(psi) and q(psi)
@@ -259,19 +280,18 @@ axs[4].plot(r, q)
 axs[4].set_ylabel(r"q")
 fig.tight_layout()
 # Additional plot of the toroidal and poloidal field at the midplane
-# for comparison with geqdsk file.
+# for comparison with GEQDSK files.
 fig, axs = plt.subplots(2,1,sharex=True)
 axs[0].plot(r, Btor_mag[0,:])
 axs[1].plot(r, Bp_mag[0,:])
-for a in axs:
-    a.axvline(0.46, ls='--',color="r")
 axs[0].set_ylabel(r"$B_\phi$ [T] (midplane)")
 axs[1].set_ylabel(r"$B_p$ [T] (midplane)")
 axs[1].set_xlabel("r (rmin)")
 
 # %% Density profile,
 # Define a density profile vs. rmin, then map it onto the flux surfaces.
-
+# Although technically the LCFS should be the last point in our 'r' grid (above)
+# it is sometimes useful to have close field-lines extend slightly outward.
 r_sep = 0.618 # Edge r_min (~separatrix)
 ne_sep = 1E-6 # Density value at r=r_sep (will also fill SOL)
 ne_core = 12.0 # Density value at min(r)
@@ -309,6 +329,27 @@ axf.plot(r, 2*fce, 'b--')
 axf.set_ylabel("Freq. [GHz]")
 axf.set_xlabel("r")
 axf.axhline(f_rf, color='r',ls="-")
+fig.tight_layout()
+
+# %% Poloidal magnetic flux,
+# The Scotty code uses the pol. magnetic flux to map the density profile onto the 
+# magnetic equilibrium. It's okay if the poloidal magnetic flux is not totally
+# accurate. It only needs to create a 1:1 map onto the density profile.
+
+# To obtain the poloidal magnetic flux we will integrate its (radial) derivative
+# which is calculated internally by the MillerGeometry class.
+dpsi_dr = MG.psiprime # shape is (r)
+# Formally, we would need to integrate from the magnetic axis.
+# for now we will just set an arbitrary offset value,
+offset=0.1
+psi = cumulative_trapezoid(dpsi_dr, r, initial=0) + offset
+
+# The normalized poloidal flux (psi_norm) is assumed to be the square root
+# of the poloidal flux normalized to the separatrix value,
+psi_norm = np.sqrt(psi/psi[np.argmin(abs(r - r_sep))])
+# The Scotty topfile.json expects the poloidal flux to be the square of the 
+# abscissa accompanying the ne profile.
+psi_RZ = psi_norm**2 + 0*Rs # map onto Z, R
 
 # %% COMSOL Domain setup.
 # Define a box in the poloidal plane for COMSOL simulations.
@@ -319,7 +360,7 @@ Rc, Zc = 2.14, -0.11 # [m]
 w, h = 0.195, 0.3075 # [m]
 
 # Create a higher-resolution grid,
-NRi, NZi = 256, 300
+NRi, NZi = 256, 256
 Ri = np.linspace(Rc, Rc + w, NRi)
 Zi = np.linspace(Zc, Zc + h, NZi)
 RRi, ZZi = np.meshgrid(Ri, Zi)
@@ -328,6 +369,8 @@ points = np.array([Rs.flatten(),Zs.flatten()]).T # must be (NRi*NZi, 2)
 # Linearly interpolate quantities onto the higher-res. grid.
 # NOTE: regions out of the flux surfaces are filled with zeros/ne_sep.
 nei = LinearNDInterpolator(points, ne_fs.flatten(), fill_value=ne_sep)(RRi, ZZi)
+
+psi_RZi = LinearNDInterpolator(points, psi_RZ.flatten(), fill_value=0.0)(RRi, ZZi)
 Bx =  LinearNDInterpolator(points, Bp_R.flatten(), fill_value=0.0)(RRi, ZZi)
 By =  LinearNDInterpolator(points, Bp_Z.flatten(), fill_value=0.0)(RRi, ZZi)
 Bz =  LinearNDInterpolator(points, Btor_mag.flatten(), fill_value=0.0)(RRi, ZZi)
@@ -362,13 +405,36 @@ for a, txt in zip(axs, ["ne", "B_tot","","bx","by","bz"]):
 fig.tight_layout()
 axs[2].remove()
 
-# %% Write COMSOL input file.
-if write_file:
-
+# %% Write input files for other codes.
+if write_comsol_input:
     data = np.array([RRi.flatten(),ZZi.flatten(), nei.flatten(), 
                      Bx.flatten(), By.flatten(), Bz.flatten()]).T
-    print(f"INFO: writing data to {path+fname}")
-    np.savetxt(path + fname, 
+    print(f"INFO: writing data to {comsol_files_path+comsol_input_filename}")
+    np.savetxt(comsol_files_path + comsol_input_filename, 
                data,
                header="R,Z,ne,Bx,By,Bz",delimiter=",",comments="%",
                )
+
+if write_scotty_input:
+    print(f"INFO: writing Scotty input files to {scotty_files_path}")
+    # The Scotty beam tracing code requires an ne.dat file and a topfile.
+    # 1. The ne.dat file contains the density profile information,
+    # Write the file,
+    fmt = '%.8e'
+    with open(scotty_files_path+"ne.dat", "w+") as f:
+        f.write(str(len(psi_norm)) + '\n')  # first line is the number of points
+        _tmp = np.vstack([psi_norm, ne]).T
+        np.savetxt(f, _tmp, fmt=fmt)
+    # 2. The topfile.json contains the magnetic field information,
+    import json
+    topfile_file = open(scotty_files_path+'topfile.json', 'w')
+    topfile_dict = {'R': Ri.tolist(), 
+                    'Z': Zi.tolist(),
+                    'Br': Bx.flatten().tolist(), 
+                    'Bz': By.flatten().tolist(), 
+                    'Bt': Bz.flatten().tolist(), 
+                    'pol_flux': psi_RZi.flatten().tolist()}
+    json = json.dumps(topfile_dict, indent=6)
+    topfile_file.write(json)
+    topfile_file.close()
+print("* done")
