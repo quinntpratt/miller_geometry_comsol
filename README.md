@@ -1,6 +1,6 @@
 ## COMSOL 2DFW setup with Miller geometry
-Python program to create inputs for a two dimensional full-wave COMSOL simulation based on Miller flux surfaces.
-COMSOL simulations require the density (ne) and the magnetic field components (Bx, By, Bz). 
+Python program to create inputs for two dimensional full-wave COMSOL-RF simulations based on Miller flux surfaces.
+COMSOL simulations require the plasma density (ne) and the magnetic field components (Bx, By, Bz) over an R, Z grid. 
 
 The user describes the plasma with, 
 - Miller parameters (``R0, delta, kappa``)
@@ -8,9 +8,12 @@ The user describes the plasma with,
 - Saftey factor profile (``q``)
 - Density profile (``ne``)
 
-The user must also specify a rectangular domain to create the high-resolution grid of COMSOL inputs. 
+The user also specifies the rectangular domain of the COMSOL simulation. 
+COMSOL inputs are interpolated onto the rectangular domain with a higher resolution.
 
 The resulting flux surfaces (and density profile) are not necessarily solutions to the Grad-Shafranov equation. 
+
+The program can also generate inputs for [the Scotty beam-tracing code](https://github.com/beam-tracing/Scotty) (``ne.dat`` and ``topfile.json``).
 
 ## Example plots
 This plot illustrates the flux surfaces and calculated poloidal magnetic field given the profiles input on the right side of the figure.
