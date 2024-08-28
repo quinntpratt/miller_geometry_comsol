@@ -7,11 +7,13 @@ Created on Tue Jul  9 17:55:06 2024
 
 Description
 -----------
-This program creates an input file for 2D full-wave simulations using the 
-COMSOL RF module.
-The Miller Geometry [1] is used to create non-trivial flux surfaces.
+This program creates input files for simulations of Doppler Back-Scattering (DBS).
+Input files for 2D full-wave simulations using COMSOL-RF can be created.
+Input files for 3D beam-tracing using the Scotty code [1] can also be created.
 
-The magnetic field is specified by the toroidal field function, I = RB_\phi and
+The Miller Geometry [2] is used to create non-trivial model flux surfaces.
+
+The magnetic field is specified by the toroidal field function, I = R*B_\phi and
 the saftey factor, q.
  
 The plasma density is specified with a radial profile, ne(r) and is mapped onto
@@ -21,21 +23,25 @@ The resulting magnetic equilibrium is NOT guarenteed to be a solution to the
 Grad-Shafronov equation.
 
 The magnetic field components and the density are written to a (.csv) file.
-The file consists of a regularly-spaced grid of the form, 
+The file consists of a regularly-spaced R,Z grid of the form, 
     R, Z, ne, Bx, By, Bz
+
+Turbulent fluctuations, if included, are written to a similar .csv file, 
+    R, Z, dn
     
-Optionally, input files for the Scotty beam-tracing code can also be generated.
-The Scotty code [3] uses the poloidal magnetic flux to interpolate the density
-profile onto the magnetic equilibrium.
+Scotty input files can also be created.
+The poloidal magnetic flux is used (by Scotty) to map the density profile onto
+the R, Z magnetic equilibrium. Two files are created when write_scotty_input=True, 
+    - ne.dat
+    - topfile.json
 
 References
 ----------
-[1] Physics of Plasmas 5, 973 (1998); https://doi.org/10.1063/1.872666
-[2] Y. Hu, "Notes on tokamak equilibrium"
-    https://youjunhu.github.io/research_notes/tokamak_equilibrium_htlatex/tokamak_equilibrium.html#x1-48001r182
-[3] Valerian H Hall-Chen et al 2022 Plasma Phys. Control. Fusion 64 095002
+[1] Valerian H Hall-Chen et al 2022 Plasma Phys. Control. Fusion 64 095002
     https://doi.org/10.1088/1361-6587/ac57a1
-
+[2] Physics of Plasmas 5, 973 (1998); https://doi.org/10.1063/1.872666
+[3] Y. Hu, "Notes on tokamak equilibrium"
+    https://youjunhu.github.io/research_notes/tokamak_equilibrium_htlatex/tokamak_equilibrium.html#x1-48001r182
 
 All rights reserved
 """
@@ -47,14 +53,19 @@ from matplotlib.colors import Normalize
 from scipy.interpolate import LinearNDInterpolator
 from scipy.integrate import cumulative_trapezoid
 import copy
+import os
 
-# Change the path and filename,
+# Optional: change the paths and filenames of outputs,
 write_comsol_input = False
-comsol_files_path = "/Users/quinnpratt/Documents/COMSOL60/simplified_dbs_emw_v2/"
+comsol_files_path = os.getcwd() + "/"
 comsol_input_filename = "comsol_dbs_emw_input.csv"
 
+include_turb = True
+write_comsol_turb_input = False
+comsol_input_turb_filename = "comsol_dbs_emw_input_turb.csv"
+
 write_scotty_input = False
-scotty_files_path = "/Users/quinnpratt/Documents/Scripts/scotty_test_miller/"
+scotty_files_path = os.getcwd() + "/"
 # The scotty files are: 'topfile.json' and 'ne.dat'
 
 f_rf = 72.5 # [GHz]
@@ -107,14 +118,17 @@ class MillerGeom:
         self.Rs = R0 + r*np.cos(theta + x*np.sin(theta))
         self.Zs = kappa*r*np.sin(theta)
         
-    def gradient(self):
+    def gradient(self,analytic=True):
         """
         Compute the gradient components, dR/dr, dR/d\theta, dZ/dr, dZ/d\theta.
         All outputs are (theta, r) shape 2d np.arrays.
         
-        Because we are using the Miller parameterizations for R, Z - the use 
-        of np.gradient can be replaced by analytic expressions in the future.
-        
+        Parameters
+        ----------
+        analytic : bool, optional
+            Compute gradient using analytic formulas.
+            If False, uses np.gradient()
+                
         Returns
         -------
         dRdt : 2d np.array of shape (theta, r)
@@ -126,8 +140,30 @@ class MillerGeom:
         dZdr : 2d np.array of shape (theta, r)
                 d(Zs)/dr
         """
-        self.dRdt, self.dRdr = np.gradient(self.Rs, self.theta, self.r)
-        self.dZdt, self.dZdr = np.gradient(self.Zs, self.theta, self.r)
+        # Compute the derivative of the params,
+        if analytic:
+            dR0_dr = np.gradient(self.R0, self.r)
+            ddelta_dr = np.gradient(self.delta, self.r)
+            dkappa_dr = np.gradient(self.kappa, self.r)
+            # Analytic derivative of x(r) = arcsin(delta(r))
+            # can become NaN for delta(r) >= 1.
+            dx_dr = ddelta_dr/np.sqrt(1 - self.delta**2)
+            # Make each (1, r) for broadcasting against \theta dimension,
+            dR0_dr, dx_dr, dkappa_dr = np.atleast_2d(dR0_dr, dx_dr, dkappa_dr)
+            # Get other params and make (1,r) for broadcasting,
+            r, R0, delta, kappa = np.atleast_2d(self.r, self.R0, self.delta, self.kappa ) # (1, nr)
+            theta = np.atleast_2d(self.theta).T # (nth, 1)
+            x = np.arcsin(delta)
+            
+            # Analytic gradients based on the Miller formulas,
+            self.dRdt = r*( -np.sin(theta + x*np.sin(theta))*(1 + x*np.cos(theta)) )
+            self.dRdr = dR0_dr + np.cos(theta + x*np.sin(theta)) - r*np.sin(theta + x*np.sin(theta))*dx_dr*np.sin(theta)
+            self.dZdt = kappa*r*np.cos(theta)
+            self.dZdr = np.sin(theta)*( kappa + r*dkappa_dr )
+        else:
+            # Numerical gradient based on np.gradient()            
+            self.dRdt, self.dRdr = np.gradient(self.Rs, self.theta, self.r)
+            self.dZdt, self.dZdr = np.gradient(self.Zs, self.theta, self.r)
         return self.dRdt, self.dRdr, self.dZdt, self.dZdr
     
     def calc_metric_terms(self, debug_plot=False):
@@ -219,9 +255,9 @@ class MillerGeom:
 # %% Flux Surface Shape
 # This section calculates the flux surface shapes.
 # Definition of the full \theta \in [0, 2pi) grid,
-Nth, Nr = 201, 101
+Nth, Nr = 512, 64
 r = np.linspace(0.4, 0.7, Nr) # midplane half-diameter coordinate.
-theta = np.linspace(0, 2*np.pi, Nth) # poloidal angle coordinate.
+theta = np.linspace(-np.pi, np.pi, Nth) # poloidal angle coordinate.
 
 # Flux-surface kwargs can be scalars or functions of 'r',
 fs_kw = dict(R0=1.7, delta=0.16, kappa=1.35)
@@ -304,7 +340,7 @@ ne = np.piecewise(r, [r <= r_sep, r > r_sep ],
 ne_fs = ne + 0*Rs 
 
 # Compute fundamental frequencies,
-B_mag = np.sqrt(Bp_mag**2 + Btor_mag**2)[0,:] # midplane [T]
+B_mag = np.sqrt(Bp_mag**2 + Btor_mag**2)[Nth//2,:] # midplane [T]
 fce = 28*B_mag # [GHz]
 fpe = 8.98E3*np.sqrt(ne*1E13)/1E9 # [GHz]
 frh = 0.5*(np.abs(fce) + np.sqrt(fce**2 + 4*fpe**2)) # [GHz]
@@ -351,6 +387,53 @@ psi_norm = np.sqrt(psi/psi[np.argmin(abs(r - r_sep))])
 # abscissa accompanying the ne profile.
 psi_RZ = psi_norm**2 + 0*Rs # map onto Z, R
 
+# %% Turbulence,
+# NOTE: for high k_theta, high poloidal resolution is needed - consider increasing
+# Nth above.
+
+# Additional toggles,
+use_local_values = True
+turb_plot_debug = True
+
+if include_turb:
+    # Poloidal wavenumber,
+    k_theta = 0.3 # [rad/cm]
+    # Differential poloidal arc-length, d\ell/d\theta converts k_theta in
+    # [rad/cm] into a poloidal mode number 'm',
+    dl_dtheta = np.sqrt( MG.dRdt**2 + MG.dZdt**2 ) # [Nt, Nr] array    
+    m = k_theta*100 * dl_dtheta # multiply by 100 to convert to [rad/m]
+    
+    # Turbulence model,
+    dn_n = 0.005 # 0.5% over background.
+    r_turb = 0.5 # [m]
+    dr_turb = 0.01 # [m]
+    radial_func = np.exp(-0.5*(np.atleast_2d(r) - r_turb)**2/dr_turb**2) # [1, Nr]
+    
+    turb_ind = np.argmin(abs(r - r_turb))
+    if use_local_values:
+        # uses the dl/d\theta at r = r_turb.
+        # dl/d\theta can shear significantly on the HFS, leading to weird artifacts.
+        m = np.atleast_2d(m[:,turb_ind]).T # [Nth, 1]
+        amplitude = dn_n*ne[turb_ind]
+    else:
+        amplitude = dn_n*ne_fs
+        
+    turb = amplitude * np.cos(m*np.atleast_2d(theta).T) * radial_func # [Nt, Nr]
+
+    # Overplot as contours on the flux surface,
+    v = dn_n*ne[turb_ind]
+    levels = [-v, -0.5*v, -0.25*v, 0.25*v, 0.5*v, v]
+    ax1.contour(Rs, Zs, turb, levels=levels, cmap="bwr", norm=Normalize(-v, v))
+    
+    if turb_plot_debug:
+        figturb, (axt1, axt2) = plt.subplots(2,1,sharex=True,num="turb_plot_debug")
+        axt1.plot(theta/np.pi, dl_dtheta[:,turb_ind])
+        axt1.set_ylabel(r"$dl/d\theta$")
+        axt2.plot(theta/np.pi, turb[:,turb_ind])
+        axt2.set_ylabel(r"$\delta n$ [E19 1/$m^3$]")
+        axt2.set_xlabel(r"$\theta/\pi$")
+
+
 # %% COMSOL Domain setup.
 # Define a box in the poloidal plane for COMSOL simulations.
 
@@ -376,6 +459,10 @@ By =  LinearNDInterpolator(points, Bp_Z.flatten(), fill_value=0.0)(RRi, ZZi)
 Bz =  LinearNDInterpolator(points, Btor_mag.flatten(), fill_value=0.0)(RRi, ZZi)
 B = np.sqrt(Bx**2 + By**2 + Bz**2)
 
+if include_turb:
+    dn_RZi = LinearNDInterpolator(points, turb.flatten(), fill_value=0.0)(RRi, ZZi)
+
+
 # Determine the edge pitch angle,
 pitch = np.arctan(By/Bz)[0,-1] * 180/np.pi
 print(f"Edge pitch angle: {pitch:.3f} [deg]")
@@ -394,6 +481,12 @@ pc = axs[0].pcolormesh(RRi, ZZi, nei)
 fig.colorbar(pc, ax=axs[0], label="Density [E19 1/m^3]")
 pc = axs[1].pcolormesh(RRi, ZZi, Bsafe)
 fig.colorbar(pc, ax=axs[1], label="Total B [T]")
+if include_turb:
+    pc = axs[2].pcolormesh(RRi, ZZi, dn_RZi, cmap="bwr")
+    fig.colorbar(pc, ax=axs[2], label=r"$\delta$n [E19 1/m^3]")
+else:
+    axs[2].remove()
+
 norm = Normalize(-1, 1)
 pc = axs[3].pcolormesh(RRi, ZZi, Bx/Bsafe, norm=norm)
 axs[4].pcolormesh(RRi, ZZi, By/Bsafe, norm=norm)
@@ -403,7 +496,6 @@ for a, txt in zip(axs, ["ne", "B_tot","","bx","by","bz"]):
     a.set_title(txt)
     a.set_aspect("equal")
 fig.tight_layout()
-axs[2].remove()
 
 # %% Write input files for other codes.
 if write_comsol_input:
@@ -413,6 +505,14 @@ if write_comsol_input:
     np.savetxt(comsol_files_path + comsol_input_filename, 
                data,
                header="R,Z,ne,Bx,By,Bz",delimiter=",",comments="%",
+               )
+
+if write_comsol_turb_input and include_turb:
+    data = np.array([RRi.flatten(),ZZi.flatten(), dn_RZi.flatten()]).T
+    print(f"INFO: writing turb data to {comsol_files_path+comsol_input_turb_filename}")
+    np.savetxt(comsol_files_path + comsol_input_turb_filename, 
+               data,
+               header="R,Z,dn",delimiter=",",comments="%",
                )
 
 if write_scotty_input:
